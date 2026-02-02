@@ -34,11 +34,10 @@ jobs:
       - name: Repo Init and Sync
         run: |
           mkdir aosp && cd aosp
-          # 初始化 Android Master
-          repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1 --filter=blob:none
+          # 移除 --filter 参数，改回基础的 depth=1
+          repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 同步关键构建环境和 ART
-          # 补充了 golang-protobuf, boringssl 等 Soong 启动必需品
+          # 进一步补全了编译 dex2oat 可能涉及到的所有 Soong 核心依赖路径
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -58,6 +57,7 @@ jobs:
             external/golang-protobuf \
             external/boringssl \
             external/scudo \
+            external/perl \
             prebuilts/clang/host/linux-x86 \
             prebuilts/build-tools \
             prebuilts/go/linux-x86 \
@@ -70,10 +70,8 @@ jobs:
           cd aosp
           source build/envsetup.sh
           
-          # 尝试使用正确的 Android 16 组合
-          lunch aosp_arm64-trunk_staging-userdebug || echo "Lunch failed, attempting direct build..."
-          
-          # 直接使用构建命令，添加 --soong-only 模式减少对其他模块的依赖检测
+          # 既然之前 lunch 会报错，我们直接绕过 lunch 环节
+          # 只要环境变量 source 了，Soong 就能独立运行
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
@@ -81,14 +79,19 @@ jobs:
           mkdir -p publish/lib64
           CP_BASE="aosp/out/host/linux-x86"
           
-          # 复制二进制
-          [ -f "$CP_BASE/bin/dex2oat" ] && cp $CP_BASE/bin/dex2oat publish/
-          
-          # 自动收集依赖库
-          LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
-          for lib in "${LIBS[@]}"; do
-            find $CP_BASE/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
-          done
+          # 检查编译产物目录是否存在
+          if [ -d "$CP_BASE" ]; then
+            [ -f "$CP_BASE/bin/dex2oat" ] && cp $CP_BASE/bin/dex2oat publish/
+            
+            # 自动寻找 .so 依赖库
+            LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
+            for lib in "${LIBS[@]}"; do
+              find $CP_BASE/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
+            done
+          else
+            echo "Build output directory not found! Check build logs for errors."
+            exit 1
+          fi
 
       - name: Upload dex2oat Binary
         uses: actions/upload-artifact@v4
