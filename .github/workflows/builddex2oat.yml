@@ -1,11 +1,11 @@
 name: Build Android 16 Host dex2oat
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -13,11 +13,12 @@ jobs:
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 2048
-          temp-reserve-mb: 1024
+          swap-size-mb: 8192
+          root-reserve-mb: 4096
+          temp-reserve-mb: 4096
           remove-dotnet: 'true'
           remove-android: 'true'
-          remove-haskell: 'true'
+          remove-haskell: 'true''
 
       - name: Install Dependencies
         run: |
@@ -26,7 +27,7 @@ jobs:
 
       - name: Install Repo
         run: |
-          mkdir ~/bin
+          mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
@@ -34,51 +35,58 @@ jobs:
       - name: Repo Init and Sync
         run: |
           mkdir aosp && cd aosp
-          # 初始化 Android 16/Master 分支
+          # 初始化 Android Master 分支 (Android 16 所在)
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 只同步构建 dex2oat 核心链路的仓库
+          # 使用相对路径同步，确保 build/make 等关键路径存在
+          # 增加了更多 external 依赖库以防止编译 Android 16 时报错
           repo sync -c -j$(nproc) --no-tags --no-current-branch \
-            platform/art \
-            platform/build/soong \
-            platform/build/blueprint \
-            platform/build/make \
-            platform/external/zlib \
-            platform/external/icu \
-            platform/system/core \
-            platform/system/libbase \
-            platform/system/libziparchive \
-            platform/prebuilts/clang/host/linux-x86 \
-            platform/prebuilts/build-tools \
-            platform/prebuilts/go/linux-x86
+            build/make \
+            build/soong \
+            build/blueprint \
+            art \
+            external/zlib \
+            external/icu \
+            external/libcxx \
+            external/libcxxabi \
+            external/lz4 \
+            external/zstd \
+            external/fmtlib \
+            system/core \
+            system/libbase \
+            system/libziparchive \
+            system/logging \
+            prebuilts/clang/host/linux-x86 \
+            prebuilts/build-tools \
+            prebuilts/go/linux-x86
           
-          # 关键步：删除 .repo 节省空间
+          # 彻底删除 .repo 以腾出约 5GB+ 空间
           rm -rf .repo
 
       - name: Build dex2oat
         run: |
           cd aosp
           source build/envsetup.sh
-          # 我们编译的是 host 工具，lunch 目标不影响工具架构
+          # lunch 一个基础目标即可，我们要的是 host 工具
           lunch aosp_arm64-userdebug
-          # 使用 soong 编译 host 版 dex2oat
+          # 使用 m 直接编译 host 版 dex2oat
           m dex2oat
 
       - name: Prepare Artifacts
         run: |
           mkdir -p publish/lib64
-          cp aosp/out/host/linux-x86/bin/dex2oat publish/
-          # 拷贝必要的运行时动态库
-          cp aosp/out/host/linux-x86/lib64/libart.so publish/lib64/ || true
-          cp aosp/out/host/linux-x86/lib64/libbase.so publish/lib64/ || true
-          cp aosp/out/host/linux-x86/lib64/libartbase.so publish/lib64/ || true
-          cp aosp/out/host/linux-x86/lib64/libdexfile.so publish/lib64/ || true
-          cp aosp/out/host/linux-x86/lib64/liblz4.so publish/lib64/ || true
-          cp aosp/out/host/linux-x86/lib64/libziparchive.so publish/lib64/ || true
-          cp aosp/out/host/linux-x86/lib64/libz.so publish/lib64/ || true
+          # 寻找生成的二进制文件
+          CP_BASE="aosp/out/host/linux-x86"
+          cp $CP_BASE/bin/dex2oat publish/
+          
+          # 使用动态搜寻方式拷贝依赖库，避免因 Android 16 库名变化导致失败
+          LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
+          for lib in "${LIBS[@]}"; do
+            find $CP_BASE/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
+          done
 
       - name: Upload dex2oat Binary
         uses: actions/upload-artifact@v4
         with:
-          name: dex2oat-host-x86_64
+          name: dex2oat-android16-host
           path: publish/
