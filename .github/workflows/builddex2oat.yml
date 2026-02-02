@@ -36,58 +36,54 @@ jobs:
           mkdir aosp && cd aosp
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 采用目录级同步，不再指定具体的 external 子项目，避免 project not found
-          # 这会同步这些大类下的所有必需组件
+          # 仅同步最基础的构建框架和核心代码
+          # 我们不再手动指定子路径（如 prebuilts/ninja），而是同步其大类目录
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
             build/blueprint \
             art \
             system/core \
-            system/logging \
             system/libbase \
-            system/libziparchive \
-            external/zlib \
-            external/icu \
             external/libcxx \
-            external/libcxxabi \
             external/golang-protobuf \
-            external/boringssl \
             prebuilts/clang/host/linux-x86 \
             prebuilts/build-tools \
-            prebuilts/go/linux-x86 \
-            prebuilts/ninja/linux-x86
-          
-          # 检查目录是否到位
-          ls -R build/soong | head -n 20
+            prebuilts/go/linux-x86
           
           rm -rf .repo
 
       - name: Build dex2oat
         run: |
           cd aosp
-          # 核心修正：设置环境变量跳过某些非核心的 sanity check
+          # 允许缺少依赖，因为我们只同步了核心部分
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+          # 强制指定使用 prebuilts 里的编译器
+          export TEMPORARY_DISABLE_PATH_RESTRICTIONS=true
+          
           source build/envsetup.sh
           
-          # 直接使用 soong_ui 编译
+          # 直接启动构建，针对 dex2oat 模块
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
         run: |
           mkdir -p publish/lib64
-          CP_BASE="aosp/out/host/linux-x86"
+          # Android 16 可能改变了输出结构，我们用 find 来精准定位
+          OUT_DIR="aosp/out/host/linux-x86"
           
-          if [ -d "$CP_BASE" ]; then
-            [ -f "$CP_BASE/bin/dex2oat" ] && cp $CP_BASE/bin/dex2oat publish/
+          if [ -d "$OUT_DIR" ]; then
+            find $OUT_DIR/bin -name "dex2oat*" -exec cp {} publish/ \;
             
-            # 自动收集依赖库
+            # 自动收集所有相关的动态链接库
             LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
             for lib in "${LIBS[@]}"; do
-              find $CP_BASE/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
+              find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
           else
-            echo "Build failed to generate output directory."
+            echo "Build failed: Output directory not found."
+            # 列出当前目录结构辅助调试
+            ls -R aosp/out || true
             exit 1
           fi
 
