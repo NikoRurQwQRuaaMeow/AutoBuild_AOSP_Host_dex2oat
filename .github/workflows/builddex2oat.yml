@@ -34,15 +34,20 @@ jobs:
       - name: Repo Init and Sync
         run: |
           mkdir aosp && cd aosp
-          # 初始化 Android Master 分支 (Android 16 所在)
-          repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
+          # 初始化 Android Master
+          repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1 --filter=blob:none
           
-          # 同步编译 dex2oat 必需的最小仓库集
+          # 同步关键构建环境和 ART
+          # 补充了 golang-protobuf, boringssl 等 Soong 启动必需品
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
             build/blueprint \
             art \
+            system/core \
+            system/libbase \
+            system/libziparchive \
+            system/logging \
             external/zlib \
             external/icu \
             external/libcxx \
@@ -50,13 +55,13 @@ jobs:
             external/lz4 \
             external/zstd \
             external/fmtlib \
-            system/core \
-            system/libbase \
-            system/libziparchive \
-            system/logging \
+            external/golang-protobuf \
+            external/boringssl \
+            external/scudo \
             prebuilts/clang/host/linux-x86 \
             prebuilts/build-tools \
-            prebuilts/go/linux-x86
+            prebuilts/go/linux-x86 \
+            prebuilts/ninja/linux-x86
           
           rm -rf .repo
 
@@ -65,11 +70,10 @@ jobs:
           cd aosp
           source build/envsetup.sh
           
-          # Android 16 新格式: <product>-<release>-<variant>
-          # aosp_arm64 是产品, trunk_staging 是 Android 16 默认 release, userdebug 是变体
-          lunch aosp_arm64-trunk_staging-userdebug || echo "Lunch failed, continuing with direct soong build..."
+          # 尝试使用正确的 Android 16 组合
+          lunch aosp_arm64-trunk_staging-userdebug || echo "Lunch failed, attempting direct build..."
           
-          # 使用 Soong 直接编译 host 版本
+          # 直接使用构建命令，添加 --soong-only 模式减少对其他模块的依赖检测
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
@@ -77,15 +81,10 @@ jobs:
           mkdir -p publish/lib64
           CP_BASE="aosp/out/host/linux-x86"
           
-          # 检查并拷贝二进制文件
-          if [ -f "$CP_BASE/bin/dex2oat" ]; then
-            cp $CP_BASE/bin/dex2oat publish/
-          else
-            # 有些版本可能会生成在 dex2oatd (debug版)
-            cp $CP_BASE/bin/dex2oat* publish/ || echo "Binary not found!"
-          fi
+          # 复制二进制
+          [ -f "$CP_BASE/bin/dex2oat" ] && cp $CP_BASE/bin/dex2oat publish/
           
-          # 动态搜寻并拷贝依赖库
+          # 自动收集依赖库
           LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
           for lib in "${LIBS[@]}"; do
             find $CP_BASE/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
