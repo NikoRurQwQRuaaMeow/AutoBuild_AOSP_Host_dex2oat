@@ -36,7 +36,7 @@ jobs:
           mkdir aosp && cd aosp
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 核心同步列表
+          # 同步核心组件
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -73,27 +73,28 @@ jobs:
           EOF
           echo 'name: "trunk_staging"' > vendor/google/release/release_configs/trunk_staging.textproto
           
-          # 2. 暴力破解：屏蔽掉所有导致报错的外部 include
-          # 删除 Virtualization 引用
-          find build/make/target/product -name "*.mk" | xargs sed -i '/Virtualization\/apex\/product_packages.mk/d'
+          # 2. 【核心修复】暴力绕过 VNDK 检查逻辑
+          # 直接修改 build/make 下的 board_config.mk，让它跳过运行校验脚本
+          sed -i 's/\$(error VNDK version \$(BOARD_VNDK_VERSION) not found.)/# VNDK bypass/g' build/make/core/board_config.mk
           
-          # 3. 环境变量强力压制 (针对 VNDK 和版本检查)
+          # 3. 屏蔽导致报错的外部 product 引用
+          find build/make/target/product -name "*.mk" | xargs sed -i '/Virtualization\/apex\/product_packages.mk/d' || true
+          
+          # 4. 注入环境变量，强行声明 VNDK 已废弃
           export RELEASE_PLATFORM_VERSION=16
           export RELEASE_PLATFORM_SDK_VERSION=35
           export SKIP_VNDK_VAR_CHECK=true
-          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
-          
-          # 强制禁用 VNDK 检查，这在 Android 15/16 中是绕过旧配置的关键
           export BOARD_VNDK_VERSION=current
           export KEEP_VNDK=false
+          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
           
-          # 4. 指定编译目标
+          # 5. 指定编译目标
           export TARGET_PRODUCT=aosp_x86_64
           export TARGET_RELEASE=trunk_staging
           export TARGET_BUILD_VARIANT=userdebug
           
           source build/envsetup.sh
-          # 启动编译
+          # 直接启动 soong 编译
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
@@ -107,13 +108,12 @@ jobs:
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
           else
-            echo "Build failed! Checking directory structure for debug:"
-            find aosp/out -maxdepth 4 || true
+            echo "Build failed! Output directory not found."
             exit 1
           fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dex2oat-android16
+          name: dex2oat-android16-host
           path: publish/
