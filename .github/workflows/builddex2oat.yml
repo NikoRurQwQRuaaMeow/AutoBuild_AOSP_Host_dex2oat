@@ -37,7 +37,7 @@ jobs:
           # 初始化 Android 16 Master 分支
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 同步编译编译系统和 ART 核心所需的最小仓库集合
+          # 同步核心组件，确保包含 starlark-go 和 golang-protobuf 以适配 Android 16 新构建系统
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -63,7 +63,7 @@ jobs:
         run: |
           cd aosp
           
-          # 1. 【核心修复】深度伪造 Release Config 环境，防止 Go 工具 Panic
+          # 1. 深度伪造 Release Config 结构，防止 Go 工具 Panic
           mkdir -p vendor/google/release/release_configs
           cat <<EOF > vendor/google/release/release_config_map.textproto
           default_containers: "none"
@@ -74,51 +74,49 @@ jobs:
           EOF
           echo 'name: "trunk_staging"' > vendor/google/release/release_configs/trunk_staging.textproto
           
-          # 2. 【核心修复】手动注入版本元数据，防止 version_util.mk 报错
-          export PLATFORM_VERSION=16
+          # 2. 注入 Android 16 要求的 Release 环境变量
+          # 注意：必须使用 RELEASE_ 前缀，否则 version_util.mk 会报错
+          export RELEASE_PLATFORM_SDK_VERSION=35
+          export RELEASE_PLATFORM_VERSION=16
           export PLATFORM_VERSION_CODENAME=VanillaIceCream
-          export PLATFORM_SDK_VERSION=35
-          export PLATFORM_VERSION_LAST_STABLE=15
           
-          # 3. 屏蔽 VNDK 检查和允许缺失依赖
+          # 3. 屏蔽 VNDK 检查并允许缺失非核心依赖
           export SKIP_VNDK_VAR_CHECK=true
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
           
-          # 4. 指定编译目标参数
+          # 4. 指定编译目标
           export TARGET_PRODUCT=aosp_x86_64
           export TARGET_RELEASE=trunk_staging
           export TARGET_BUILD_VARIANT=userdebug
           
-          # 5. 启动环境并编译
+          # 5. 启动 Soong 编译引擎
           source build/envsetup.sh
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
         run: |
           mkdir -p publish/lib64
-          # 定位编译产物目录
           OUT_DIR="aosp/out/host/linux-x86"
           
           if [ -d "$OUT_DIR" ]; then
-            # 拷贝主程序
+            # 拷贝主程序 dex2oat
             find $OUT_DIR/bin -name "dex2oat*" -exec cp {} publish/ \;
             
-            # 拷贝 Android 16 运行必须的动态链接库
-            # 重点包含 ART 基础库、Base 库和 C++ 标准库
+            # 拷贝核心动态链接库
             LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
             for lib in "${LIBS[@]}"; do
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
             
-            # 记录版本信息
-            echo "Android 16 Host dex2oat Build at $(date)" > publish/version.txt
+            echo "Android 16 Build Success: $(date)" > publish/info.txt
           else
-            echo "Build failed: No output directory."
+            echo "Build directory not found. Listing aosp/out for debug:"
+            ls -R aosp/out || true
             exit 1
           fi
 
-      - name: Upload dex2oat Binary
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dex2oat-android16-host
+          name: dex2oat-android16
           path: publish/
