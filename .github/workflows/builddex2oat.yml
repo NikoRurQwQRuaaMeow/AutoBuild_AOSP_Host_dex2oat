@@ -36,7 +36,7 @@ jobs:
           mkdir aosp && cd aosp
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 同步最核心路径
+          # 同步核心路径
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -57,28 +57,31 @@ jobs:
         run: |
           cd aosp
           
-          # 【终极修复：李代桃僵】
-          # 1. 强制创建输出目录（如果不存在）
-          mkdir -p out/host/linux-x86/bin/
+          # 【核心修复】构造一个能通过 Go 程序校验的最小化 Release Config
+          mkdir -p vendor/google/release/release_configs
           
-          # 2. 伪造一个 release-config 二进制文件
-          # 这个脚本会吞掉所有参数并静默退出，返回 0 (成功)
-          echo '#!/bin/bash' > out/host/linux-x86/bin/release-config
-          echo 'exit 0' >> out/host/linux-x86/bin/release-config
-          chmod +x out/host/linux-x86/bin/release-config
+          # 1. 构造 map 文件。注意：必须包含 default_containers 字段且格式正确
+          cat <<EOF > vendor/google/release/release_config_map.textproto
+          default_containers: "none"
+          entries {
+            name: "trunk_staging"
+            path: "vendor/google/release/release_configs/trunk_staging.textproto"
+          }
+          EOF
           
-          # 3. 告诉环境，如果找不到 vendor，不要报错
-          mkdir -p vendor/google/release/
-          touch vendor/google/release/release_config_map.textproto
+          # 2. 构造具体的 config 文件，必须包含 name 字段
+          cat <<EOF > vendor/google/release/release_configs/trunk_staging.textproto
+          name: "trunk_staging"
+          EOF
 
-          # 环境变量设置
+          # 3. 环境变量压制
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
           export SKIP_VNDK_VAR_CHECK=true
           export TARGET_PRODUCT=aosp_x86_64
           export TARGET_RELEASE=trunk_staging
           export TARGET_BUILD_VARIANT=userdebug
           
-          # 尝试直接调用 soong_ui，跳过 envsetup 可能带来的二次检查
+          # 尝试直接调用 soong_ui
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
@@ -87,14 +90,13 @@ jobs:
           OUT_DIR="aosp/out/host/linux-x86"
           
           if [ -d "$OUT_DIR" ]; then
-            # 注意：排除掉我们伪造的那个 release-config
             find $OUT_DIR/bin -name "dex2oat*" -exec cp {} publish/ \;
             LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
             for lib in "${LIBS[@]}"; do
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
           else
-            echo "Build failed: No output directory."
+            echo "Build failed: Output directory not found."
             exit 1
           fi
 
