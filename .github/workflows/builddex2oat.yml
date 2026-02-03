@@ -34,10 +34,10 @@ jobs:
       - name: Repo Init and Sync
         run: |
           mkdir aosp && cd aosp
-          # 初始化 Android 16 Master 分支
+          # 初始化 Android 16 Master 分支 (由于同步较多，确保网络稳定)
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 同步核心组件，确保包含 starlark-go 和 golang-protobuf 以适配 Android 16 新构建系统
+          # 同步核心组件：增加了 system/logging 等 Android 16 强依赖项
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -63,7 +63,7 @@ jobs:
         run: |
           cd aosp
           
-          # 1. 深度伪造 Release Config 结构，防止 Go 工具 Panic
+          # 1. 深度伪造 Release Config 结构 (Android 16 必需)
           mkdir -p vendor/google/release/release_configs
           cat <<EOF > vendor/google/release/release_config_map.textproto
           default_containers: "none"
@@ -74,11 +74,10 @@ jobs:
           EOF
           echo 'name: "trunk_staging"' > vendor/google/release/release_configs/trunk_staging.textproto
           
-          # 2. 注入 Android 16 要求的 Release 环境变量
-          # 注意：必须使用 RELEASE_ 前缀，否则 version_util.mk 会报错
-          export RELEASE_PLATFORM_SDK_VERSION=35
+          # 2. 【核心修复】遵循 Android 16 变量优先级
+          # 仅设置 RELEASE_ 开头的变量，让系统自动推导代号 (VanillaIceCream)
           export RELEASE_PLATFORM_VERSION=16
-          export PLATFORM_VERSION_CODENAME=VanillaIceCream
+          export RELEASE_PLATFORM_SDK_VERSION=35
           
           # 3. 屏蔽 VNDK 检查并允许缺失非核心依赖
           export SKIP_VNDK_VAR_CHECK=true
@@ -99,10 +98,10 @@ jobs:
           OUT_DIR="aosp/out/host/linux-x86"
           
           if [ -d "$OUT_DIR" ]; then
-            # 拷贝主程序 dex2oat
+            # 拷贝主程序
             find $OUT_DIR/bin -name "dex2oat*" -exec cp {} publish/ \;
             
-            # 拷贝核心动态链接库
+            # 拷贝核心动态链接库 (Android 16 的 dex2oat 极其依赖这些 so)
             LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
             for lib in "${LIBS[@]}"; do
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
@@ -110,7 +109,7 @@ jobs:
             
             echo "Android 16 Build Success: $(date)" > publish/info.txt
           else
-            echo "Build directory not found. Listing aosp/out for debug:"
+            echo "Build failed! Checking if any output exists..."
             ls -R aosp/out || true
             exit 1
           fi
@@ -118,5 +117,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dex2oat-android16
+          name: dex2oat-android16-x86_64
           path: publish/
