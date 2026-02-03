@@ -36,7 +36,7 @@ jobs:
           mkdir aosp && cd aosp
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 同步最核心的构建依赖
+          # 同步必需的最小集合
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -57,11 +57,11 @@ jobs:
         run: |
           cd aosp
           
-          # 【核心修复】伪造 Android 16 缺失的 Release Config 路径
+          # 【核心修复】伪造包含必需字段的 Release Config
           mkdir -p vendor/google/release/
-          touch vendor/google/release/release_config_map.textproto
+          echo 'default_containers: "none"' > vendor/google/release/release_config_map.textproto
           
-          # 允许缺少依赖并强制指定编译目标
+          # 告诉编译系统忽略其他非核心配置缺失
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
           export TARGET_RELEASE=trunk_staging
           export TARGET_PRODUCT=aosp_arm64
@@ -69,7 +69,7 @@ jobs:
           
           source build/envsetup.sh
           
-          # 直接使用 soong_ui 编译
+          # 直接调用 soong_ui 进行编译
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
@@ -80,13 +80,13 @@ jobs:
           if [ -d "$OUT_DIR" ]; then
             find $OUT_DIR/bin -name "dex2oat*" -exec cp {} publish/ \;
             
-            # 自动搜集库文件
+            # 自动搜集依赖库
             LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
             for lib in "${LIBS[@]}"; do
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
           else
-            echo "Build failed: No output directory."
+            echo "Build failed: Output directory missing."
             exit 1
           fi
 
