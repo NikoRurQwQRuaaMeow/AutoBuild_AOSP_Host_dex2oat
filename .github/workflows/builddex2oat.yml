@@ -36,7 +36,7 @@ jobs:
           mkdir aosp && cd aosp
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 增加同步：为了绕过 product_config 报错，我们需要 build/ 下更多的脚本
+          # 核心同步列表
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -62,7 +62,7 @@ jobs:
         run: |
           cd aosp
           
-          # 1. 深度伪造 Release Config 结构
+          # 1. 深度伪造 Release Config 结构 (Android 16 必需)
           mkdir -p vendor/google/release/release_configs
           cat <<EOF > vendor/google/release/release_config_map.textproto
           default_containers: "none"
@@ -73,25 +73,27 @@ jobs:
           EOF
           echo 'name: "trunk_staging"' > vendor/google/release/release_configs/trunk_staging.textproto
           
-          # 2. 【核心修复】强行屏蔽掉报错的模块引用
-          # 既然它找不到 Virtualization 模块，我们就把那行 include 直接删了
-          sed -i '/Virtualization\/apex\/product_packages.mk/d' build/make/target/product/aosp_x86_64.mk || true
+          # 2. 暴力破解：屏蔽掉所有导致报错的外部 include
+          # 删除 Virtualization 引用
+          find build/make/target/product -name "*.mk" | xargs sed -i '/Virtualization\/apex\/product_packages.mk/d'
           
-          # 3. 注入版本变量
+          # 3. 环境变量强力压制 (针对 VNDK 和版本检查)
           export RELEASE_PLATFORM_VERSION=16
           export RELEASE_PLATFORM_SDK_VERSION=35
-          
-          # 4. 环境压制
           export SKIP_VNDK_VAR_CHECK=true
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
           
-          # 5. 使用更基础的产品定义
+          # 强制禁用 VNDK 检查，这在 Android 15/16 中是绕过旧配置的关键
+          export BOARD_VNDK_VERSION=current
+          export KEEP_VNDK=false
+          
+          # 4. 指定编译目标
           export TARGET_PRODUCT=aosp_x86_64
           export TARGET_RELEASE=trunk_staging
           export TARGET_BUILD_VARIANT=userdebug
           
           source build/envsetup.sh
-          # 直接调用 soong_ui 并强制指定目标
+          # 启动编译
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
@@ -105,7 +107,8 @@ jobs:
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
           else
-            echo "Build failed!"
+            echo "Build failed! Checking directory structure for debug:"
+            find aosp/out -maxdepth 4 || true
             exit 1
           fi
 
