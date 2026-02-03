@@ -36,7 +36,7 @@ jobs:
           mkdir aosp && cd aosp
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 仅同步编译 dex2oat 绝对需要的核心路径
+          # 同步最核心路径
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -57,29 +57,30 @@ jobs:
         run: |
           cd aosp
           
-          # 【方案 A】彻底删除之前伪造的 vendor 目录，防止 Soong 去扫描它
-          rm -rf vendor
+          # 【核心修复：暴力绕过】
+          # 修改 build/make/core/release_config.mk，强行让 release-config 工具返回成功但不做任何事
+          # 我们把执行该工具的那几行逻辑直接注释掉或替换掉
+          sed -i 's/\$(shell \$(OUT_DIR)\/release-config)/# \$(shell \$(OUT_DIR)\/release-config)/g' build/make/core/release_config.mk
           
-          # 【核心修复】使用环境变量屏蔽 Android 16 的 Release Config 系统
-          # 强制指定一个不需要 release_config 映射的变量
+          # 进一步：如果 release_config.mk 报错，我们干脆让它不包含这个文件
+          # 修改 build/make/core/envsetup.mk，屏蔽掉对 release_config.mk 的引用
+          sed -i 's/include \$(BUILD_SYSTEM)\/release_config.mk/# include \$(BUILD_SYSTEM)\/release_config.mk/g' build/make/core/envsetup.mk
+
+          # 环境变量
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
           export SKIP_VNDK_VAR_CHECK=true
-          
-          # 尝试使用最小化产品定义，避开对 google/release 的引用
-          export TARGET_PRODUCT=generic
-          export TARGET_RELEASE=fips140 # 这是一个通常内置在 build/make 下的 base 配置
+          export TARGET_PRODUCT=aosp_x86_64
+          export TARGET_RELEASE=trunk_staging
           export TARGET_BUILD_VARIANT=userdebug
           
           source build/envsetup.sh
           
-          # 直接调用 soong_ui。注意：我们增加一个环境变量来禁用 release config 检查
-          # 某些 AOSP 版本支持这个变量来跳过 release-config 的运行
-          DISABLE_RELEASE_CONFIG=true ./build/soong/soong_ui.bash --make-mode dex2oat
+          # 绕过 lunch，直接编译
+          ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
         run: |
           mkdir -p publish/lib64
-          # 只要编译成功，文件就会出现在这里
           OUT_DIR="aosp/out/host/linux-x86"
           
           if [ -d "$OUT_DIR" ]; then
@@ -89,9 +90,7 @@ jobs:
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
           else
-            echo "Build failed: Output directory not found."
-            # 调试：看看生成了什么
-            ls -R aosp/out || true
+            echo "Build failed: No output directory."
             exit 1
           fi
 
