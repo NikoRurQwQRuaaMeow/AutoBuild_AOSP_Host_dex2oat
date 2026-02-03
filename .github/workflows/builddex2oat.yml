@@ -34,13 +34,15 @@ jobs:
       - name: Repo Init and Sync
         run: |
           mkdir aosp && cd aosp
+          # 初始化 master 分支（Android 16 开发主线）
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 同步必需的最小集合
+          # 【精准同步】只拉取 Android 16 必需的最小仓库集
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
             build/blueprint \
+            build/release \
             art \
             system/core \
             system/libbase \
@@ -57,45 +59,35 @@ jobs:
         run: |
           cd aosp
           
-          # 【核心修复】伪造 Android 16 必需的 Release Config 结构
-          mkdir -p vendor/google/release/release_configs
-          
-          # 1. 映射文件：声明 trunk_staging 配置
-          cat <<EOF > vendor/google/release/release_config_map.textproto
-          default_containers: "none"
-          entries {
-            name: "trunk_staging"
-            path: "vendor/google/release/release_configs/trunk_staging.textproto"
-          }
-          EOF
-          
-          # 2. 具体配置文件：即使为空也要存在
-          touch vendor/google/release/release_configs/trunk_staging.textproto
-          
-          # 环境参数
+          # 设置环境变量，这是 Android 16 编译的核心
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+          # 必须指定这个，因为 build/release 里定义了它
           export TARGET_RELEASE=trunk_staging
           export TARGET_PRODUCT=aosp_arm64
           export TARGET_BUILD_VARIANT=userdebug
           
           source build/envsetup.sh
           
-          # 执行编译
+          # 运行构建，通过 soong_ui 绕过繁琐的 lunch 检查
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
         run: |
           mkdir -p publish/lib64
+          # 使用 find 定位产物，因为 Android 16 的输出路径可能有微调
           OUT_DIR="aosp/out/host/linux-x86"
           
           if [ -d "$OUT_DIR" ]; then
             find $OUT_DIR/bin -name "dex2oat*" -exec cp {} publish/ \;
+            
+            # 搜集依赖库，确保能在本地 Linux 运行
             LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
             for lib in "${LIBS[@]}"; do
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
           else
-            echo "Build failed: No output directory."
+            echo "Build directory not found. Printing aosp/out for debugging:"
+            ls -R aosp/out || true
             exit 1
           fi
 
