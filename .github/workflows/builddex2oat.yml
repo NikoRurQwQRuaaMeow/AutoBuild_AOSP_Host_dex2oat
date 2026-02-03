@@ -36,8 +36,7 @@ jobs:
           mkdir aosp && cd aosp
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 仅同步最基础的构建框架和核心代码
-          # 我们不再手动指定子路径（如 prebuilts/ninja），而是同步其大类目录
+          # 增加 starlark-go 和 golang-protobuf 以支持 Android 16 的新编译系统
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -47,6 +46,7 @@ jobs:
             system/libbase \
             external/libcxx \
             external/golang-protobuf \
+            external/starlark-go \
             prebuilts/clang/host/linux-x86 \
             prebuilts/build-tools \
             prebuilts/go/linux-x86
@@ -56,34 +56,32 @@ jobs:
       - name: Build dex2oat
         run: |
           cd aosp
-          # 允许缺少依赖，因为我们只同步了核心部分
+          # 设置此环境变量是关键：忽略非核心模块的缺失
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
-          # 强制指定使用 prebuilts 里的编译器
-          export TEMPORARY_DISABLE_PATH_RESTRICTIONS=true
+          # 告知 Soong 我们不需要编译完整的 SDK/Product 配置
+          export TARGET_BUILD_VARIANT=userdebug
+          export TARGET_PRODUCT=aosp_arm64
           
           source build/envsetup.sh
           
-          # 直接启动构建，针对 dex2oat 模块
+          # 直接编译模块产物
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
         run: |
           mkdir -p publish/lib64
-          # Android 16 可能改变了输出结构，我们用 find 来精准定位
           OUT_DIR="aosp/out/host/linux-x86"
           
           if [ -d "$OUT_DIR" ]; then
             find $OUT_DIR/bin -name "dex2oat*" -exec cp {} publish/ \;
             
-            # 自动收集所有相关的动态链接库
+            # 自动搜集库文件
             LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
             for lib in "${LIBS[@]}"; do
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
           else
-            echo "Build failed: Output directory not found."
-            # 列出当前目录结构辅助调试
-            ls -R aosp/out || true
+            echo "Build did not generate expected host output."
             exit 1
           fi
 
