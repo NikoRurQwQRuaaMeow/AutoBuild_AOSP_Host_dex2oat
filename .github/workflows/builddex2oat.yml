@@ -34,9 +34,10 @@ jobs:
       - name: Repo Init and Sync
         run: |
           mkdir aosp && cd aosp
+          # 初始化 Android 16 Master 分支
           repo init -u https://android.googlesource.com/platform/manifest -b master --depth=1
           
-          # 同步核心路径
+          # 同步编译编译系统和 ART 核心所需的最小仓库集合
           repo sync -c -j$(nproc) --no-tags --no-current-branch --no-clone-bundle \
             build/make \
             build/soong \
@@ -44,9 +45,14 @@ jobs:
             art \
             system/core \
             system/libbase \
+            system/logging \
+            system/libziparchive \
             external/libcxx \
+            external/libcxxabi \
             external/golang-protobuf \
             external/starlark-go \
+            external/zlib \
+            external/fmtlib \
             prebuilts/clang/host/linux-x86 \
             prebuilts/build-tools \
             prebuilts/go/linux-x86
@@ -57,10 +63,8 @@ jobs:
         run: |
           cd aosp
           
-          # 【核心修复】构造一个能通过 Go 程序校验的最小化 Release Config
+          # 1. 【核心修复】深度伪造 Release Config 环境，防止 Go 工具 Panic
           mkdir -p vendor/google/release/release_configs
-          
-          # 1. 构造 map 文件。注意：必须包含 default_containers 字段且格式正确
           cat <<EOF > vendor/google/release/release_config_map.textproto
           default_containers: "none"
           entries {
@@ -68,35 +72,48 @@ jobs:
             path: "vendor/google/release/release_configs/trunk_staging.textproto"
           }
           EOF
+          echo 'name: "trunk_staging"' > vendor/google/release/release_configs/trunk_staging.textproto
           
-          # 2. 构造具体的 config 文件，必须包含 name 字段
-          cat <<EOF > vendor/google/release/release_configs/trunk_staging.textproto
-          name: "trunk_staging"
-          EOF
-
-          # 3. 环境变量压制
-          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+          # 2. 【核心修复】手动注入版本元数据，防止 version_util.mk 报错
+          export PLATFORM_VERSION=16
+          export PLATFORM_VERSION_CODENAME=VanillaIceCream
+          export PLATFORM_SDK_VERSION=35
+          export PLATFORM_VERSION_LAST_STABLE=15
+          
+          # 3. 屏蔽 VNDK 检查和允许缺失依赖
           export SKIP_VNDK_VAR_CHECK=true
+          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+          
+          # 4. 指定编译目标参数
           export TARGET_PRODUCT=aosp_x86_64
           export TARGET_RELEASE=trunk_staging
           export TARGET_BUILD_VARIANT=userdebug
           
-          # 尝试直接调用 soong_ui
+          # 5. 启动环境并编译
+          source build/envsetup.sh
           ./build/soong/soong_ui.bash --make-mode dex2oat
 
       - name: Prepare Artifacts
         run: |
           mkdir -p publish/lib64
+          # 定位编译产物目录
           OUT_DIR="aosp/out/host/linux-x86"
           
           if [ -d "$OUT_DIR" ]; then
+            # 拷贝主程序
             find $OUT_DIR/bin -name "dex2oat*" -exec cp {} publish/ \;
+            
+            # 拷贝 Android 16 运行必须的动态链接库
+            # 重点包含 ART 基础库、Base 库和 C++ 标准库
             LIBS=("libart" "libbase" "libartbase" "libdexfile" "liblz4" "libziparchive" "libz" "liblog" "libc++")
             for lib in "${LIBS[@]}"; do
               find $OUT_DIR/lib64 -name "${lib}.so" -exec cp {} publish/lib64/ \;
             done
+            
+            # 记录版本信息
+            echo "Android 16 Host dex2oat Build at $(date)" > publish/version.txt
           else
-            echo "Build failed: Output directory not found."
+            echo "Build failed: No output directory."
             exit 1
           fi
 
